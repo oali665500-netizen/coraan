@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>منصة التجويد التعليمية</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo-section">
+                <h1>منصة التجويد</h1>
+                <p>تعليم التجويد بأسهل الطرق</p>
+            </div>
+            <div class="header-actions">
+                <button class="btn-upload" id="uploadBtn">🎬 إضافة فيديو</button>
+                <a class="btn-support" href="https://wa.me/201157086209" target="_blank" rel="noopener">خدمة العملاء</a>
+                <button class="btn-logout" id="logoutBtn" style="display:none;">تسجيل خروج</button>
+                <div class="user-menu">
+                    <span>👤</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Hero Section -->
+        <section class="hero">
+            <h2>المواد التعليمية</h2>
+            <p>اختر المادة التي تريد تعلمها</p>
+        </section>
+
+        <!-- Subjects Grid (kept only two subjects) -->
+        <section class="subjects-grid subject-grid-centered">
+            <div class="subject-card" data-subject="basics">
+                <div class="subject-icon">📚</div>
+                <h3>أساسيات التجويد</h3>
+            </div>
+
+            <div class="subject-card" data-subject="tajweed-rules">
+                <div class="subject-icon">✨</div>
+                <h3>أحكام التجويد</h3>
+            </div>
+        </section>
+
+        <!-- Videos Container -->
+        <section class="videos-section" id="videosSection" style="display: none;">
+            <div class="back-button">
+                <button id="backBtn">← العودة</button>
+            </div>
+            <h2 id="videoTitle"></h2>
+            <div class="videos-grid" id="videosGrid"></div>
+        </section>
+    </main>
+
+    <!-- Upload Modal -->
+    <div class="modal" id="uploadModal">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2>🎬 إضافة فيديو جديد</h2>
+            <form id="uploadForm">
+                <div class="form-group">
+                    <label>اختر المادة:</label>
+                    <select id="subjectSelect" required>
+                        <option value="">-- اختر --</option>
+                        <option value="basics">أساسيات التجويد</option>
+                        <option value="tajweed-rules">أحكام التجويد</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>عنوان الفيديو:</label>
+                    <input type="text" id="videoTitle" required placeholder="أدخل عنوان الفيديو">
+                </div>
+
+                <div class="form-group">
+                    <label>وصف الفيديو:</label>
+                    <textarea id="videoDescription" required placeholder="أدخل وصف الفيديو"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label>📁 اختر ملف الفيديو من الكمبيوتر:</label>
+                    <input type="file" id="videoFile" accept="video/*" required>
+                    <small style="color: #999;">صيغ مدعومة: MP4, WebM, OGG, AVI, MOV</small>
+                    <div id="currentFileInfo" style="margin-top:8px;color:#666;font-size:13px;display:none;"></div>
+                </div>
+
+                <button type="submit" class="btn-submit">✅ إضافة الفيديو</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Admin Auth Modal -->
+    <div class="modal" id="authModal">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2>تسجيل دخول الأدمن</h2>
+            <form id="authForm">
+                <div class="form-group">
+                    <label>أدخل كلمة المرور:</label>
+                    <input type="password" id="adminPassword" required placeholder="كلمة المرور">
+                </div>
+                <button type="submit" class="btn-submit">دخول</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Video Player Modal -->
+    <div class="modal" id="videoPlayerModal">
+        <div class="video-player-content">
+            <span class="close-btn">&times;</span>
+            <div class="video-player">
+                <iframe id="videoFrame" width="100%" height="600" frameborder="0" allowfullscreen></iframe>
+            </div>
+            <div class="video-info">
+                <h3 id="playerVideoTitle"></h3>
+                <p id="playerVideoDescription"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <p>&copy; 2026 منصة التجويد التعليمية. جميع الحقوق محفوظة</p>
+            <div class="social-links">
+                <a href="#">Facebook</a>
+                <a href="#">Twitter</a>
+                <a href="#">YouTube</a>
+            </div>
+        </div>
+    </footer>
+
+    <script src="videos-data.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
