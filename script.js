@@ -1,371 +1,57 @@
-// Read videos database from external file `videos-data.js` (defined as window.videosDatabase)
-// If not present, initialize an empty structure so app still works when the file is missing.
+// Read videos database from external file `videos-data.js`
 let videosDatabase = window.videosDatabase || {
     'basics': [],
-    'letters': [],
-    'tajweed-rules': [],
-    'stopping': [],
-    'practice': [],
-    'advanced': []
+    'tajweed-rules': []
 };
 
-// Persistence for deleted videos using localStorage
-const DELETED_KEY = 'deletedVideoIds';
-
-function getDeletedIds() {
-    try {
-        const raw = localStorage.getItem(DELETED_KEY);
-        if (!raw) return new Set();
-        const arr = JSON.parse(raw);
-        return new Set(arr);
-    } catch (err) {
-        return new Set();
-    }
-}
-
-function saveDeletedIds(set) {
-    try {
-        localStorage.setItem(DELETED_KEY, JSON.stringify([...set]));
-    } catch (err) {
-        // ignore
-    }
-}
-
-function applyDeletedFilter() {
-    const deleted = getDeletedIds();
-    for (const subjectKey in videosDatabase) {
-        if (!Array.isArray(videosDatabase[subjectKey])) continue;
-        videosDatabase[subjectKey] = videosDatabase[subjectKey].filter(v => !deleted.has(v.id));
-    }
-}
-
-// Persistence for full videos database so uploads/edits survive reload
-const VIDEOS_KEY = 'videosDatabase_v1';
-
-function saveDatabase() {
-    try {
-        localStorage.setItem(VIDEOS_KEY, JSON.stringify(videosDatabase));
-        return true;
-    } catch (err) {
-        // fallback: try to save a light-weight copy without large data URLs
-        try {
-            const light = JSON.parse(JSON.stringify(videosDatabase));
-            for (const subj in light) {
-                if (!Array.isArray(light[subj])) continue;
-                light[subj] = light[subj].map(v => {
-                    const copy = Object.assign({}, v);
-                    if (copy.isLocal && copy.url) {
-                        delete copy.url; // remove large data
-                        copy._localStored = false; // mark that media blob not stored
-                    }
-                    return copy;
-                });
-            }
-            localStorage.setItem(VIDEOS_KEY, JSON.stringify(light));
-            showNotification('تم حفظ بيانات الفيديو (بدون ملفات الوسائط الكبيرة بسبب حد التخزين).');
-            return true;
-        } catch (err2) {
-            console.error('Failed to save videos database:', err, err2);
-            showNotification('فشل حفظ البيانات في التخزين المحلي (مساحة التخزين ممتلئة).');
-            return false;
-        }
-    }
-}
-
-function loadPersistedDatabase() {
-    try {
-        const raw = localStorage.getItem(VIDEOS_KEY);
-        if (!raw) {
-            // if there's an external DB defined, keep it
-            if (window.videosDatabase) videosDatabase = window.videosDatabase;
-            return;
-        }
-        const parsed = JSON.parse(raw);
-        // ensure all expected subject keys exist
-        const expected = ['basics','letters','tajweed-rules','stopping','practice','advanced'];
-        for (const k of expected) if (!Array.isArray(parsed[k])) parsed[k] = [];
-        videosDatabase = parsed;
-    } catch (err) {
-        // fallback: keep current videosDatabase
-    }
-}
-
-// IndexedDB helpers for storing video blobs
-const IDB_NAME = 'myVideosDB';
-const IDB_STORE = 'videoBlobs';
-
-function openIDB() {
-    return new Promise((res, rej) => {
-        const req = indexedDB.open(IDB_NAME, 1);
-        req.onupgradeneeded = e => {
-            const db = e.target.result;
-            if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
-        };
-        req.onsuccess = e => res(e.target.result);
-        req.onerror = e => rej(e.target.error);
-    });
-}
-
-function putBlob(key, blob) {
-    return openIDB().then(db => new Promise((res, rej) => {
-        const tx = db.transaction(IDB_STORE, 'readwrite');
-        const store = tx.objectStore(IDB_STORE);
-        const r = store.put(blob, key);
-        r.onsuccess = () => { db.close(); res(true); };
-        r.onerror = (e) => { db.close(); rej(e.target.error); };
-    }));
-}
-
-function getBlob(key) {
-    return openIDB().then(db => new Promise((res, rej) => {
-        const tx = db.transaction(IDB_STORE, 'readonly');
-        const store = tx.objectStore(IDB_STORE);
-        const r = store.get(key);
-        r.onsuccess = () => { db.close(); res(r.result); };
-        r.onerror = (e) => { db.close(); rej(e.target.error); };
-    }));
-}
-
-function deleteBlob(key) {
-    return openIDB().then(db => new Promise((res, rej) => {
-        const tx = db.transaction(IDB_STORE, 'readwrite');
-        const store = tx.objectStore(IDB_STORE);
-        const r = store.delete(key);
-        r.onsuccess = () => { db.close(); res(true); };
-        r.onerror = (e) => { db.close(); rej(e.target.error); };
-    }));
-}
-
-// Initialize subjects if not exists
 const subjects = {
     'basics': 'أساسيات التجويد',
-    'letters': 'أحكام الحروف',
-    'tajweed-rules': 'أحكام التجويد',
-    'stopping': 'أحكام الوقف',
-    'practice': 'تطبيقات عملية',
-    'advanced': 'مستويات متقدمة'
+    'tajweed-rules': 'أحكام التجويد'
 };
 
 // DOM Elements
-const uploadBtn = document.getElementById('uploadBtn');
-const uploadModal = document.getElementById('uploadModal');
 const videoPlayerModal = document.getElementById('videoPlayerModal');
-const uploadForm = document.getElementById('uploadForm');
 const subjectCards = document.querySelectorAll('.subject-card');
 const videosSection = document.getElementById('videosSection');
 const backBtn = document.getElementById('backBtn');
 const closeButtons = document.querySelectorAll('.close-btn');
-const logoutBtn = document.getElementById('logoutBtn');
 
-// DOM elements for auth
-const authModal = document.getElementById('authModal');
-const authForm = document.getElementById('authForm');
-const adminPasswordInput = document.getElementById('adminPassword');
-
-// Admin password (change as needed)
-const ADMIN_PASSWORD = 'omar4664664664';
-
-// Admin state
-let isAdmin = false;
-
-// Editing state
-let editingVideoId = null;
-let editingVideoSubject = null;
-// Currently playing blob URL (revoked on modal close)
-let currentBlobUrl = null;
+// Currently playing iframe URL
+let currentVideoSource = null;
 
 // Event Listeners
-uploadBtn.addEventListener('click', openAuthModal);
 backBtn.addEventListener('click', goBack);
 subjectCards.forEach(card => card.addEventListener('click', viewSubject));
-uploadForm.addEventListener('submit', handleFormSubmit);
-authForm.addEventListener('submit', handleAuthSubmit);
 closeButtons.forEach(btn => btn.addEventListener('click', closeModal));
-if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
 
-// Update admin UI (show/hide admin controls)
-function updateAdminUI() {
-    const logoutEl = document.getElementById('logoutBtn');
-    if (logoutEl) logoutEl.style.display = isAdmin ? 'inline-block' : 'none';
-
-    // re-render current subject to add/remove admin buttons
-    const cur = document.body.getAttribute('data-current-subject');
-    if (cur) renderVideos(cur);
-}
-
-// Close modal when clicking outside (handle upload, video player, auth)
+// Close modal when clicking outside
 window.addEventListener('click', (e) => {
-    if (e.target === uploadModal) hideSpecificModal(uploadModal);
     if (e.target === videoPlayerModal) hideSpecificModal(videoPlayerModal);
-    if (e.target === authModal) hideSpecificModal(authModal);
 });
-
-// Open Upload Modal (kept for backward compatibility but auth gate is used)
-function openUploadModal() {
-    uploadModal.style.display = 'block';
-}
 
 // Hide a specific modal element
 function hideSpecificModal(modalEl) {
     if (!modalEl) return;
-    // revoke any created blob URL when closing the video player
-    if (modalEl === videoPlayerModal && currentBlobUrl) {
-        try { URL.revokeObjectURL(currentBlobUrl); } catch (e) {}
-        currentBlobUrl = null;
-        // restore an empty placeholder element if the player was a <video>
-        const existing = document.getElementById('videoFrame');
-        if (existing && existing.tagName.toLowerCase() === 'video') {
-            // replace with a placeholder iframe element used elsewhere in the app
-            const placeholder = document.createElement('div');
-            placeholder.id = 'videoFrame';
-            existing.replaceWith(placeholder);
+    // Clear iframe when closing
+    if (modalEl === videoPlayerModal) {
+        const videoFrame = document.getElementById('videoFrame');
+        if (videoFrame && videoFrame.tagName.toLowerCase() === 'iframe') {
+            videoFrame.src = '';
         }
+        currentVideoSource = null;
     }
     modalEl.style.display = 'none';
 }
 
-// Generic close handler (used by close buttons) - hides the modal that contains the clicked button
+// Generic close handler (used by close buttons)
 function closeModal(e) {
-    // If called as event handler, e is the event
     if (e && e.currentTarget) {
-        // The close button itself
         const btn = e.currentTarget;
         const modal = btn.closest('.modal');
         if (modal) hideSpecificModal(modal);
         return;
     }
-
-    // If called without event, hide known modals
-    hideSpecificModal(uploadModal);
     hideSpecificModal(videoPlayerModal);
-    hideSpecificModal(authModal);
-}
-
-// Open Auth Modal (before upload)
-function openAuthModal() {
-    adminPasswordInput.value = '';
-    authModal.style.display = 'block';
-}
-
-// Handle Auth Submit
-function handleAuthSubmit(e) {
-    e.preventDefault();
-    const val = adminPasswordInput.value;
-    if (val === ADMIN_PASSWORD) {
-        authModal.style.display = 'none';
-        // open upload modal for admin
-        uploadModal.style.display = 'block';
-        isAdmin = true;
-        updateAdminUI();
-        showNotification('مرحباً، تم التحقق. أنت الآن كأدمن.');
-    } else {
-        showNotification('كلمة المرور خاطئة');
-        adminPasswordInput.value = '';
-    }
-}
-
-function handleLogout() {
-    isAdmin = false;
-    updateAdminUI();
-    showNotification('تم تسجيل الخروج');
-}
-
-// Handle Form Submit
-async function handleFormSubmit(e) {
-    e.preventDefault();
-
-    const subject = document.getElementById('subjectSelect').value;
-    const title = document.getElementById('videoTitle').value;
-    const description = document.getElementById('videoDescription').value;
-    const fileInput = document.getElementById('videoFile');
-    const file = fileInput.files[0];
-
-    // If editing an existing video
-    if (editingVideoId && editingVideoSubject) {
-        const videos = videosDatabase[editingVideoSubject] || [];
-        const idx = videos.findIndex(v => v.id === editingVideoId);
-        if (idx === -1) {
-            showNotification('خطأ: الفيديو غير موجود');
-            return;
-        }
-
-        // update fields
-        videos[idx].title = title;
-        videos[idx].description = description;
-
-        // If a new file chosen, store it in IndexedDB and update blobKey
-        if (file) {
-            try {
-                const blobKey = videos[idx].blobKey || videos[idx].id || Date.now();
-                await putBlob(blobKey, file);
-                videos[idx].blobKey = blobKey;
-                videos[idx].fileName = file.name;
-                videos[idx].isLocal = true;
-            } catch (err) {
-                showNotification('فشل حفظ ملف الفيديو محلياً');
-                return;
-            }
-        }
-
-        saveDatabase();
-        finishEdit(subject);
-        return;
-    }
-
-    // New video flow
-    if (!file) {
-        showNotification('اختر ملف فيديو أولاً');
-        return;
-    }
-
-    const id = Date.now();
-    try {
-        await putBlob(id, file);
-    } catch (err) {
-        showNotification('فشل حفظ ملف الفيديو محلياً: ' + (err && err.message ? err.message : 'خطأ'));
-        return;
-    }
-
-    const video = {
-        id,
-        title,
-        description,
-        isLocal: true,
-        fileName: file.name,
-        blobKey: id,
-        duration: '0',
-        uploadDate: new Date().toLocaleDateString('ar-SA')
-    };
-
-    // Add to database
-    videosDatabase[subject].push(video);
-    // persist new video
-    saveDatabase();
-
-    // Reset form
-    uploadForm.reset();
-    document.getElementById('currentFileInfo').style.display = 'none';
-    closeModal();
-
-    // Show success message
-    showNotification('✅ تم إضافة الفيديو بنجاح!');
-
-    // If viewing this subject, refresh
-    const currentSubject = document.body.getAttribute('data-current-subject');
-    if (currentSubject === subject) renderVideos(subject);
-}
-
-function finishEdit(subject) {
-    // Reset editing state and UI
-    editingVideoId = null;
-    editingVideoSubject = null;
-    uploadForm.reset();
-    document.getElementById('currentFileInfo').style.display = 'none';
-    closeModal();
-    showNotification('✅ تم تحديث بيانات الفيديو');
-    // persist edits
-    saveDatabase();
-    if (document.body.getAttribute('data-current-subject') === subject) renderVideos(subject);
 }
 
 // View Subject
@@ -374,7 +60,7 @@ function viewSubject(e) {
     const subjectTitle = subjects[subject];
 
     document.body.setAttribute('data-current-subject', subject);
-    document.getElementById('videoTitle').textContent = subjectTitle;
+    document.getElementById('sectionVideoTitle').textContent = subjectTitle;
     
     // Hide subjects grid, show videos
     document.querySelector('.subjects-grid').style.display = 'none';
@@ -385,59 +71,62 @@ function viewSubject(e) {
     window.scrollTo(0, 0);
 }
 
-// Ensure admin UI is correct on load
+// Load persisted database on page load
 document.addEventListener('DOMContentLoaded', () => {
-    // load any previously persisted videos, then apply deleted filter
-    loadPersistedDatabase();
-    applyDeletedFilter();
-    updateAdminUI();
+    // Keep using external videosDatabase from videos-data.js
 });
 
 // Render Videos
 function renderVideos(subject) {
     const videosGrid = document.getElementById('videosGrid');
     const videos = videosDatabase[subject] || [];
-    const videoTitle = document.getElementById('videoTitle');
+    const sectionTitle = document.getElementById('sectionVideoTitle');
     
-    videoTitle.textContent = subjects[subject];
+    sectionTitle.textContent = subjects[subject];
 
     if (videos.length === 0) {
         videosGrid.innerHTML = `
             <div style="grid-column: 1/-1; text-align: center; padding: 40px; color: #999;">
                 <p style="font-size: 18px;">لا توجد فيديوهات في هذا القسم حالياً</p>
-                <p style="margin-top: 10px;">انقر على "🎬 إضافة فيديو" لإضافة محتوى جديد</p>
+                <p style="margin-top: 10px;">تحقق من الفيديوهات المتاحة قريباً</p>
             </div>
         `;
         return;
     }
 
-    videosGrid.innerHTML = videos.map(video => `
-        <div class="video-card" onclick="playVideo(${video.id}, '${subject}')">
-            <div class="video-poster" style="background-image: url('${video.isLocal ? '' : video.poster}'); background-size: cover;">
-                🎥
-            </div>
-            <div class="video-card-content">
-                <div class="video-card-title">${video.title}</div>
-                <div class="video-card-description">${video.description.substring(0, 80)}...</div>
-                <div class="video-meta">
-                    <span>${video.isLocal ? '💾 محلي' : '🌐 أونلاين'}</span>
-                    <span>📅 ${video.uploadDate}</span>
+    videosGrid.innerHTML = videos.map(video => {
+        const youtubeId = video.youtubeId;
+        const thumbnailUrl = `https://img.youtube.com/vi/${youtubeId}/hqdefault.jpg`;
+        return `
+            <div class="youtube-video-card">
+                <div class="video-thumbnail-container" onclick="playVideo(${video.id}, '${subject}')">
+                    <img src="${thumbnailUrl}" alt="${video.title}" class="video-thumbnail">
+                    <div class="play-button">▶</div>
                 </div>
-                ${isAdmin ? `
-                <div style="margin-top:12px; display:flex; gap:8px;">
-                    <button onclick="event.stopPropagation(); editVideo(${video.id}, '${subject}')" style="padding:8px 12px;border-radius:6px;border:none;background:#ffb2b2;cursor:pointer;">تعديل</button>
-                    <button onclick="event.stopPropagation(); deleteVideo(${video.id}, '${subject}')" style="padding:8px 12px;border-radius:6px;border:none;background:#ff6b6b;color:#fff;cursor:pointer;">حذف</button>
+                <div class="video-details">
+                    <h3 class="video-title">${video.title}</h3>
+                    <p class="video-description">${video.description}</p>
+                    <div class="video-metadata">
+                        <span class="duration">⏱️ ${video.duration || '--'} دقيقة</span>
+                    </div>
                 </div>
-                ` : ''}
             </div>
-        </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 // Play Video
 function playVideo(videoId, subject) {
     const video = videosDatabase[subject].find(v => v.id === videoId);
-    if (!video) return;
+    if (!video) {
+        showNotification('الفيديو غير موجود');
+        return;
+    }
+
+    if (!video.youtubeId) {
+        showNotification('خطأ: رقم ID الفيديو غير صحيح');
+        return;
+    }
 
     const videoFrame = document.getElementById('videoFrame');
     const playerVideoTitle = document.getElementById('playerVideoTitle');
@@ -446,144 +135,27 @@ function playVideo(videoId, subject) {
     playerVideoTitle.textContent = video.title;
     playerVideoDescription.textContent = video.description;
 
-    // Check if it's a local file
-    if (video.isLocal) {
-        // If stored in IndexedDB use blobKey, otherwise fall back to data URL
-        if (video.blobKey) {
-            // show modal first, then fetch blob and set source
-            videoPlayerModal.style.display = 'block';
-            getBlob(video.blobKey).then(blob => {
-                if (!blob) { showNotification('ملف الفيديو غير موجود محلياً'); return; }
-                try { if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; } } catch (e) {}
-                currentBlobUrl = URL.createObjectURL(blob);
-                // create video element
-                const html = `<video id="videoFrame" width="100%" height="600" controls style="border-radius: 10px;">
-                    <source src="${currentBlobUrl}" type="${getMimeType(video.fileName)}">
-                    المتصفح الخاص بك لا يدعم عرض الفيديو
-                </video>`;
-                const placeholder = document.getElementById('videoFrame');
-                placeholder.outerHTML = html;
-                const vEl = document.getElementById('videoFrame');
-                vEl.addEventListener('ended', () => { if (currentBlobUrl) { URL.revokeObjectURL(currentBlobUrl); currentBlobUrl = null; } });
-            }).catch(() => showNotification('خطأ في قراءة ملف الفيديو'));
-            return;
-        }
-        if (video.url) {
-            // fallback to old dataURL behavior
-            videoFrame.outerHTML = `<video id="videoFrame" width="100%" height="600" controls style="border-radius: 10px;">
-            <source src="${video.url}" type="${getMimeType(video.fileName)}">
-            المتصفح الخاص بك لا يدعم عرض الفيديو
-        </video>`;
-        } else {
-            showNotification('لا يوجد ملف محلي محفوظ لهذا الفيديو');
-            return;
-        }
-    } else {
-        // Convert URL to embedded format for online videos
-        const embeddedUrl = convertToEmbedded(video.url);
-        videoFrame.src = embeddedUrl;
-    }
+    // بناء embed URL باستخدام video ID مباشرة
+    const youtubeId = video.youtubeId.trim();
+    const embeddedUrl = `https://www.youtube-nocookie.com/embed/${youtubeId}?modestbranding=1&rel=0&controls=1&enablejsapi=0`;
+    
+    console.log('فيديو ID:', youtubeId);
+    console.log('embed URL:', embeddedUrl);
+    
+    videoFrame.src = embeddedUrl;
+    
+    // معالجة أخطاء iframe
+    videoFrame.onerror = function() {
+        console.error('فشل تحميل الفيديو');
+        showNotification('⚠️ الفيديو لا يدعم التضمين أو رم ID غير صاح');
+    };
 
+    currentVideoSource = embeddedUrl;
     videoPlayerModal.style.display = 'block';
 }
 
-// Delete video (admin only)
-function deleteVideo(videoId, subject) {
-    if (!isAdmin) {
-        showNotification('ممنوع: تحتاج تسجيل دخول الأدمن');
-        return;
-    }
-    const list = videosDatabase[subject] || [];
-    const idx = list.findIndex(v => v.id === videoId);
-    if (idx === -1) return;
-    // simple confirm
-    if (!confirm('هل متأكد أنك تريد حذف هذا الفيديو؟')) return;
-    const removed = list.splice(idx, 1)[0];
-    // persist deletion so it stays deleted after page reload
-    try {
-        const deleted = getDeletedIds();
-        deleted.add(videoId);
-        saveDeletedIds(deleted);
-    } catch (err) {
-        // ignore storage errors
-    }
-    // remove blob from IndexedDB if exists, then persist the updated videos database
-    try {
-        if (removed && removed.blobKey) {
-            deleteBlob(removed.blobKey).catch(() => {});
-        }
-    } catch (e) {}
-    try { saveDatabase(); } catch (e) {}
-    renderVideos(subject);
-    showNotification('تم حذف الفيديو');
-}
-
-// Edit video (admin only) - prefill upload modal for editing
-function editVideo(videoId, subject) {
-    if (!isAdmin) {
-        showNotification('ممنوع: تحتاج تسجيل دخول الأدمن');
-        return;
-    }
-    const list = videosDatabase[subject] || [];
-    const video = list.find(v => v.id === videoId);
-    if (!video) return;
-
-    // set editing state
-    editingVideoId = videoId;
-    editingVideoSubject = subject;
-
-    // Prefill form fields
-    document.getElementById('subjectSelect').value = subject;
-    document.getElementById('videoTitle').value = video.title;
-    document.getElementById('videoDescription').value = video.description;
-    const currentInfo = document.getElementById('currentFileInfo');
-    if (video.isLocal && video.fileName) {
-        currentInfo.textContent = 'ملف حالي: ' + video.fileName + ' (لا يمكن تغيير الملف تلقائياً، اختر ملفاً جديداً إذا أردت استبداله)';
-        currentInfo.style.display = 'block';
-    } else {
-        currentInfo.textContent = 'الفيديو أونلاين أو لا يوجد ملف محلي';
-        currentInfo.style.display = 'block';
-    }
-
-    // open upload modal
-    uploadModal.style.display = 'block';
-}
-
-// Get MIME type from file extension
-function getMimeType(fileName) {
-    const ext = fileName.split('.').pop().toLowerCase();
-    const mimeTypes = {
-        'mp4': 'video/mp4',
-        'webm': 'video/webm',
-        'ogg': 'video/ogg',
-        'avi': 'video/x-msvideo',
-        'mov': 'video/quicktime'
-    };
-    return mimeTypes[ext] || 'video/mp4';
-}
-
-// Convert URL to embedded format
-function convertToEmbedded(url) {
-    // YouTube
-    if (url.includes('youtube.com/watch?v=')) {
-        const videoId = url.split('v=')[1].split('&')[0];
-        return `https://www.youtube.com/embed/${videoId}`;
-    }
-    if (url.includes('youtu.be/')) {
-        const videoId = url.split('youtu.be/')[1].split('?')[0];
-        return `https://www.youtube.com/embed/${videoId}`;
-    }
-    // Vimeo
-    if (url.includes('vimeo.com/')) {
-        const videoId = url.split('vimeo.com/')[1].split('?')[0];
-        return `https://player.vimeo.com/video/${videoId}`;
-    }
-    // Direct video file
-    if (url.includes('.mp4') || url.includes('.webm') || url.includes('.ogg')) {
-        return `<video width="100%" height="600" controls><source src="${url}" type="video/mp4"></video>`;
-    }
-    return url;
-}
+// استخدام YouTube Video ID مباشرة فقط
+// لا نحتاج لاستخراج ID - يتم تخزينها في youtubeId بشكل مباشر
 
 // Go Back
 function goBack() {
@@ -592,12 +164,6 @@ function goBack() {
     videosSection.style.display = 'none';
     document.body.removeAttribute('data-current-subject');
     window.scrollTo(0, 0);
-}
-
-// Generate Default Poster
-function generateDefaultPoster() {
-    const colors = ['#FF6B6B', '#FF5252', '#FF6B6B', '#FF4444'];
-    return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='250'%3E%3Crect fill='%23FF6B6B' width='400' height='250'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='white' font-size='48' font-family='Arial'%3E🎥%3C/text%3E%3C/svg%3E`;
 }
 
 // Show Notification
@@ -626,11 +192,6 @@ function showNotification(message) {
     }, 3000);
 }
 
-// Add some sample videos for demo
-function addSampleVideos() {
-    // البيانات موجودة بالفعل في videosDatabase
-}
-
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -639,4 +200,301 @@ document.addEventListener('keydown', (e) => {
             goBack();
         }
     }
+});
+
+// ==================== ADMIN PANEL ====================
+const ADMIN_PASSWORD = 'omar4664664664';
+
+// فتح Admin Panel - إظهار نموذج تسجيل الدخول
+function openAdminPanel() {
+    const loginModal = document.getElementById('adminLoginModal');
+    if (loginModal) {
+        loginModal.style.display = 'block';
+        const passwordInput = document.getElementById('adminPasswordInput');
+        if (passwordInput) {
+            passwordInput.focus();
+            passwordInput.value = '';
+        }
+    }
+}
+
+// إغلاق نموذج تسجيل الدخول
+function closeAdminLoginModal() {
+    const loginModal = document.getElementById('adminLoginModal');
+    if (loginModal) {
+        loginModal.style.display = 'none';
+        const passwordInput = document.getElementById('adminPasswordInput');
+        if (passwordInput) {
+            passwordInput.value = '';
+        }
+    }
+}
+
+// تسجيل دخول الـ Admin
+function loginToAdmin() {
+    const passwordInput = document.getElementById('adminPasswordInput');
+    if (!passwordInput) return;
+    
+    const password = passwordInput.value;
+    
+    if (password === ADMIN_PASSWORD) {
+        closeAdminLoginModal();
+        openFullAdminPanel();
+    } else {
+        passwordInput.value = '';
+        showNotification('❌ كلمة المرور غير صحيحة');
+    }
+}
+
+// فتح لوحة التحكم الكاملة
+function openFullAdminPanel() {
+    const adminPanel = document.getElementById('adminPanelModal');
+    if (adminPanel) {
+        adminPanel.style.display = 'block';
+        loadSavedDatabase();
+        updateStats();
+        loadAllVideos();
+    }
+}
+
+// إغلاق لوحة التحكم
+function closeAdminPanel() {
+    const adminPanel = document.getElementById('adminPanelModal');
+    if (adminPanel) {
+        adminPanel.style.display = 'none';
+    }
+}
+
+// تحميل البيانات المحفوظة من localStorage
+function loadSavedDatabase() {
+    const savedDatabase = localStorage.getItem('videosDatabase');
+    if (savedDatabase) {
+        try {
+            videosDatabase = JSON.parse(savedDatabase);
+            window.videosDatabase = videosDatabase;
+        } catch(e) {
+            console.log('خطأ في تحميل البيانات المحفوظة');
+        }
+    }
+}
+
+// تحديث الإحصائيات
+function updateStats() {
+    const basicsCount = videosDatabase['basics'] ? videosDatabase['basics'].length : 0;
+    const tajweedCount = videosDatabase['tajweed-rules'] ? videosDatabase['tajweed-rules'].length : 0;
+    
+    document.getElementById('statsBasics').textContent = basicsCount;
+    document.getElementById('statsTajweed').textContent = tajweedCount;
+    document.getElementById('statsTotal').textContent = basicsCount + tajweedCount;
+}
+
+// إضافة فيديو جديد
+function addNewVideo() {
+    try {
+        console.log('=== بدء محاولة إضافة فيديو ===');
+        
+        // الحصول على العناصر بعناية
+        let category = document.getElementById('videoCategory');
+        let title = document.getElementById('videoTitle');
+        let description = document.getElementById('videoDescription');
+        let youtubeLink = document.getElementById('youtubeLink');
+        let duration = document.getElementById('videoDuration');
+
+        // إذا لم تكن موجودة، جرب البحث عنها بطريقة أخرى
+        if (!category) category = document.querySelector('[id*="videoCategory"]');
+        if (!title) title = document.querySelector('[id*="videoTitle"]');
+        if (!description) description = document.querySelector('[id*="videoDescription"]');
+        if (!youtubeLink) youtubeLink = document.querySelector('[id*="youtubeLink"]');
+        if (!duration) duration = document.querySelector('[id*="videoDuration"]');
+
+        console.log('العناصر المُكتشفة:', { 
+            category: !!category, 
+            title: !!title, 
+            description: !!description, 
+            youtubeLink: !!youtubeLink, 
+            duration: !!duration 
+        });
+
+        if (!title || !description || !youtubeLink || !category) {
+            console.error('لم تُعثر على بعض العناصر:');
+            console.error('title:', title);
+            console.error('description:', description);
+            console.error('youtubeLink:', youtubeLink);
+            console.error('category:', category);
+            alert('❌ خطأ: العناصر المطلوبة غير موجودة');
+            return;
+        }
+
+        const categoryValue = category.value || 'basics';
+        const titleValue = title.value ? title.value.trim() : '';
+        const descriptionValue = description.value ? description.value.trim() : '';
+        let youtubeId = youtubeLink.value ? youtubeLink.value.trim() : '';
+        const durationValue = duration.value ? duration.value.trim() : '';
+
+        console.log('البيانات المدخلة:', { categoryValue, titleValue, descriptionValue, youtubeId, durationValue });
+
+        if (!titleValue || !descriptionValue || !youtubeId) {
+            alert('❌ يرجى ملء جميع الحقول المطلوبة');
+            showNotification('❌ يرجى ملء جميع الحقول المطلوبة');
+            return;
+        }
+
+        // استخراج YouTube ID من الرابط الكامل إذا لزم الأمر
+        if (youtubeId.includes('youtube.com') || youtubeId.includes('youtu.be')) {
+            const match = youtubeId.match(/(?:youtu\.be\/|youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/);
+            if (match && match[1]) {
+                youtubeId = match[1];
+                console.log('تم استخراج الـ ID:', youtubeId);
+            }
+        }
+
+        console.log('الـ ID النهائي:', youtubeId);
+
+        if (!youtubeId || youtubeId.length < 10) {
+            console.error('YouTube ID غير صحيح:', youtubeId);
+            alert('❌ YouTube ID غير صحيح. يجب أن يكون 11 حرف على الأقل');
+            showNotification('❌ YouTube ID غير صحيح');
+            return;
+        }
+
+        const newVideo = {
+            id: getNextVideoId(),
+            title: titleValue,
+            description: descriptionValue,
+            youtubeId: youtubeId,
+            duration: durationValue || '--'
+        };
+
+        console.log('الفيديو الجديد:', newVideo);
+
+        if (!videosDatabase[categoryValue]) {
+            videosDatabase[categoryValue] = [];
+        }
+        videosDatabase[categoryValue].push(newVideo);
+        
+        // حفظ في localStorage
+        const dataToSave = JSON.stringify(videosDatabase);
+        localStorage.setItem('videosDatabase', dataToSave);
+
+        console.log('تم حفظ الفيديو في localStorage');
+        console.log('البيانات المحفوظة:', localStorage.getItem('videosDatabase'));
+
+        // مسح النموذج
+        title.value = '';
+        description.value = '';
+        youtubeLink.value = '';
+        if (duration) duration.value = '';
+
+        alert('✅ تم إضافة الفيديو بنجاح!');
+        showNotification('✅ تم إضافة الفيديو بنجاح');
+        
+        // تحديث الإحصائيات والقائمة
+        updateStats();
+        loadAllVideos();
+        
+        // تحديث الفيديوهات في الصفحة الرئيسية إذا كانت مفتوحة
+        const currentSubject = document.body.getAttribute('data-current-subject');
+        console.log('الموضوع الحالي:', currentSubject);
+        if (currentSubject) {
+            renderVideos(currentSubject);
+        }
+        
+        console.log('=== اكتمل إضافة الفيديو بنجاح ===');
+    } catch (error) {
+        console.error('خطأ في addNewVideo:', error);
+        console.error('Stack:', error.stack);
+        alert('❌ حدث خطأ: ' + error.message);
+    }
+}
+
+// حذف فيديو
+function deleteVideo(videoId, category) {
+    if (!confirm('هل تريد حذف هذا الفيديو؟')) return;
+
+    videosDatabase[category] = videosDatabase[category].filter(v => v.id !== videoId);
+    localStorage.setItem('videosDatabase', JSON.stringify(videosDatabase));
+    
+    showNotification('✅ تم حذف الفيديو بنجاح');
+    updateStats();
+    loadAllVideos();
+    
+    // تحديث الفيديوهات في الصفحة الرئيسية
+    const currentSubject = document.body.getAttribute('data-current-subject');
+    if (currentSubject) {
+        renderVideos(currentSubject);
+    }
+}
+
+// تحميل جميع الفيديوهات
+function loadAllVideos() {
+    const videosList = document.getElementById('allVideosList');
+    let html = '';
+
+    for (let category in videosDatabase) {
+        const videos = videosDatabase[category];
+        
+        if (videos.length > 0) {
+            html += `<h3 style="color: #667eea; margin-top: 20px; margin-bottom: 15px; border-bottom: 2px solid #667eea; padding-bottom: 10px;">${subjects[category]}</h3>`;
+            html += '<div class="videos-grid-admin">';
+            
+            videos.forEach(video => {
+                html += `
+                    <div class="video-card-admin">
+                        <h4>${video.title}</h4>
+                        <div class="category">${subjects[category]}</div>
+                        <div class="description">${video.description}</div>
+                        <div style="font-size: 12px; color: #999; margin-bottom: 10px;">⏱️ ${video.duration} دقيقة</div>
+                        <button class="btn-delete-admin" onclick="deleteVideo(${video.id}, '${category}')">🗑️ حذف الفيديو</button>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+        }
+    }
+
+    if (html === '') {
+        html = '<div class="empty-message">📭 لا توجد فيديوهات حالياً - ابدأ بإضافة فيديو جديد</div>';
+    }
+
+    videosList.innerHTML = html;
+}
+
+// حساب ID جديد
+function getNextVideoId() {
+    let maxId = 0;
+    for (let category in videosDatabase) {
+        videosDatabase[category].forEach(video => {
+            if (video.id > maxId) maxId = video.id;
+        });
+    }
+    return maxId + 1;
+}
+
+// إغلاق modal بالضغط خارجه
+window.addEventListener('click', (e) => {
+    const loginModal = document.getElementById('adminLoginModal');
+    const adminPanel = document.getElementById('adminPanelModal');
+    
+    if (loginModal && e.target === loginModal) {
+        closeAdminLoginModal();
+    }
+    if (adminPanel && e.target === adminPanel) {
+        closeAdminPanel();
+    }
+});
+
+// Enter لتسجيل الدخول
+document.addEventListener('DOMContentLoaded', () => {
+    const passwordInput = document.getElementById('adminPasswordInput');
+    if (passwordInput) {
+        passwordInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loginToAdmin();
+            }
+        });
+    }
+    
+    // تحميل البيانات المحفوظة
+    loadSavedDatabase();
 });

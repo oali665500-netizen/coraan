@@ -1,0 +1,22 @@
+{
+  "name": "tajweed-platform",
+  "version": "1.0.0",
+  "description": "منصة التجويد التعليمية - Tajweed Educational Platform",
+  "main": "index.html",
+  "scripts": {
+    "dev": "npx http-server -p 8000 -c-1",
+    "build": "echo 'Static site - no build needed'",
+    "serve": "npx http-server -p 3000"
+  },
+  "keywords": [
+    "tajweed",
+    "quran",
+    "education",
+    "islamic"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
